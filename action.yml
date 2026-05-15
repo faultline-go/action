@@ -234,6 +234,7 @@ runs:
 
     - name: Upload SARIF to GitHub code scanning
       if: >
+        always() &&
         inputs.sarif-upload == 'true' &&
         (github.event_name != 'pull_request' || steps.pr-review.outcome == 'success' || steps.pr-review.outcome == 'failure')
       uses: github/codeql-action/upload-sarif@v3
