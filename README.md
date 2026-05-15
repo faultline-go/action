@@ -34,7 +34,8 @@ jobs:
 ```
 
 That's it. On pull requests, Faultline posts a risk advisory comment and uploads
-SARIF to GitHub code scanning. On pushes to main, it scans and uploads SARIF.
+SARIF to GitHub code scanning. On pushes to main, it scans, uploads SARIF, and
+exposes a compact scan summary output for downstream workflow steps.
 
 ## With test coverage
 
@@ -142,7 +143,7 @@ boundaries:
 
 | Output | Description |
 |---|---|
-| `risk-summary` | JSON scan summary |
+| `risk-summary` | Compact `.summary` JSON from the full `faultline-report.json` scan report on non-PR runs |
 | `snapshot-id` | Enterprise snapshot ID (when uploaded) |
 
 ## Permissions

@@ -74,7 +74,7 @@ inputs:
 
 outputs:
   risk-summary:
-    description: JSON summary of the scan result
+    description: Compact .summary JSON from the full scan report
     value: ${{ steps.scan.outputs.risk-summary }}
 
   snapshot-id:
@@ -172,32 +172,69 @@ runs:
             --enterprise-org-id ${{ inputs.enterprise-org-id }}"
         fi
 
+        set +e
         set -o pipefail
         faultline scan ${{ inputs.patterns }} \
-          --format sarif \
-          --out faultline.sarif \
+          --format json \
+          --out faultline-report.json \
           --fail-on ${{ inputs.fail-on }} \
           ${{ steps.coverage.outputs.coverage_flag }} \
           ${{ steps.config.outputs.config_flag }} \
           $ENTERPRISE_FLAGS 2>&1 | tee faultline-scan.log
+        SCAN_STATUS=${PIPESTATUS[0]}
 
-        echo "risk-summary=" >> "$GITHUB_OUTPUT"
+        faultline scan ${{ inputs.patterns }} \
+          --format sarif \
+          --out faultline.sarif \
+          ${{ steps.coverage.outputs.coverage_flag }} \
+          ${{ steps.config.outputs.config_flag }} 2>&1 | tee faultline-sarif.log
+        SARIF_STATUS=${PIPESTATUS[0]}
+        set -e
+
+        SUMMARY="$(node -e '
+          const fs = require("fs");
+          const report = JSON.parse(fs.readFileSync("faultline-report.json", "utf8"));
+          if (!report.summary || typeof report.summary !== "object") {
+            throw new Error("faultline-report.json does not contain a summary object");
+          }
+          process.stdout.write(JSON.stringify(report.summary));
+        ')"
+        echo "risk-summary=${SUMMARY}" >> "$GITHUB_OUTPUT"
+
+        if [ "$SARIF_STATUS" -ne 0 ]; then
+          exit "$SARIF_STATUS"
+        fi
+        exit "$SCAN_STATUS"
 
     - name: Expose Enterprise upload output
       id: upload
+      if: always()
       shell: bash
       run: |
-        SNAPSHOT_ID=""
-        if [ -f faultline-scan.log ]; then
-          SNAPSHOT_ID="$(sed -n 's/.*enterprise: snapshot uploaded (id: \([^,)]*\).*/\1/p' faultline-scan.log | tail -1)"
-        fi
-        if [ -z "$SNAPSHOT_ID" ] && [ -f faultline-pr.log ]; then
-          SNAPSHOT_ID="$(sed -n 's/.*enterprise: snapshot uploaded (id: \([^,)]*\).*/\1/p' faultline-pr.log | tail -1)"
-        fi
+        SNAPSHOT_ID="$(node -e '
+          const fs = require("fs");
+          const logs = ["faultline-scan.log", "faultline-pr.log"]
+            .filter((path) => fs.existsSync(path))
+            .map((path) => fs.readFileSync(path, "utf8"))
+            .join("\n");
+          const patterns = [
+            /"snapshot_id"\s*:\s*"([^"]+)"/g,
+            /\bsnapshot[_-]id\s*[=:]\s*([A-Za-z0-9._:-]+)/gi,
+            /enterprise:\s+snapshot uploaded\s+\(id:\s*([^,\)]+)/gi,
+          ];
+          let id = "";
+          for (const pattern of patterns) {
+            for (const match of logs.matchAll(pattern)) {
+              id = match[1].trim();
+            }
+          }
+          process.stdout.write(id);
+        ')"
         echo "snapshot-id=${SNAPSHOT_ID}" >> "$GITHUB_OUTPUT"
 
     - name: Upload SARIF to GitHub code scanning
       if: >
+        always() &&
         inputs.sarif-upload == 'true' &&
         (github.event_name != 'pull_request' || steps.pr-review.outcome == 'success' || steps.pr-review.outcome == 'failure')
       uses: github/codeql-action/upload-sarif@v3

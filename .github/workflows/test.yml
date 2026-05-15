@@ -32,7 +32,8 @@ jobs:
           print(f"description_length={len(description)}")
           PY
 
-  self-test:
+  self-test-pr:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -42,6 +43,10 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
 
       - name: Create sample Go module
         run: |
@@ -53,11 +58,116 @@ jobs:
           cat > main.go <<'EOF'
           package main
 
-          func main() {}
-          EOF
+          func message() string { return "ok" }
 
-      - uses: ./
+          func main() { _ = message() }
+          EOF
+          cat > main_test.go <<'EOF'
+          package main
+
+          import "testing"
+
+          func TestMessage(t *testing.T) {
+            if message() != "ok" {
+              t.Fatal("unexpected message")
+            }
+          }
+          EOF
+          cat > faultline.yaml <<'EOF'
+          version: 1
+          EOF
+          go test ./... -coverprofile=coverage.out
+
+      - id: faultline
+        uses: ./
         with:
           fail-on: none
           sarif-upload: 'false'
           post-comment: 'false'
+          coverage: coverage.out
+          config: faultline.yaml
+
+      - name: Validate Enterprise upload was skipped
+        env:
+          SNAPSHOT_ID: ${{ steps.faultline.outputs.snapshot-id }}
+        run: |
+          if [ -n "$SNAPSHOT_ID" ]; then
+            echo "snapshot-id should be empty when Enterprise credentials are omitted"
+            exit 1
+          fi
+
+  self-test-push:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+
+      - name: Create sample Go module
+        run: |
+          cat > go.mod <<'EOF'
+          module example.com/faultline-action-smoke
+
+          go 1.24
+          EOF
+          cat > main.go <<'EOF'
+          package main
+
+          func message() string { return "ok" }
+
+          func main() { _ = message() }
+          EOF
+          cat > main_test.go <<'EOF'
+          package main
+
+          import "testing"
+
+          func TestMessage(t *testing.T) {
+            if message() != "ok" {
+              t.Fatal("unexpected message")
+            }
+          }
+          EOF
+          cat > faultline.yaml <<'EOF'
+          version: 1
+          EOF
+          go test ./... -coverprofile=coverage.out
+
+      - id: faultline
+        uses: ./
+        with:
+          fail-on: none
+          sarif-upload: 'false'
+          coverage: coverage.out
+          config: faultline.yaml
+
+      - name: Validate push outputs
+        env:
+          RISK_SUMMARY: ${{ steps.faultline.outputs.risk-summary }}
+          SNAPSHOT_ID: ${{ steps.faultline.outputs.snapshot-id }}
+        run: |
+          if [ -z "$RISK_SUMMARY" ]; then
+            echo "risk-summary output is empty"
+            exit 1
+          fi
+          if [ -n "$SNAPSHOT_ID" ]; then
+            echo "snapshot-id should be empty when Enterprise credentials are omitted"
+            exit 1
+          fi
+          node -e '
+            const summary = JSON.parse(process.env.RISK_SUMMARY);
+            if (!summary || typeof summary !== "object") {
+              throw new Error("risk-summary is not a JSON object");
+            }
+            if (!Number.isInteger(summary.total_packages)) {
+              throw new Error("risk-summary missing total_packages");
+            }
+          '
